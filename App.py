@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 import plotly.graph_objects as go
+import yfinance as yf
 
 from tensorflow.keras.models import load_model
 
@@ -20,7 +21,24 @@ st.set_page_config(
 
 
 # ============================================================
-# FILE PATHS
+# STOCK SELECTION
+# ============================================================
+
+st.sidebar.header("📊 Stock Selection")
+
+ticker = st.sidebar.text_input(
+    "Enter Stock Ticker",
+    value="AAPL",
+    placeholder="Example: AAPL"
+).upper().strip()
+
+st.sidebar.caption(
+    "Examples: AAPL, TSLA, MSFT, GOOGL, AMZN"
+)
+
+
+# ============================================================
+# MODEL FILE PATHS
 # ============================================================
 
 MODEL_PATH = os.path.join(
@@ -39,15 +57,20 @@ SCALER_PATH = os.path.join(
 # ============================================================
 
 if not os.path.exists(MODEL_PATH):
+
     st.error(
         f"Model file not found: {MODEL_PATH}"
     )
+
     st.stop()
 
+
 if not os.path.exists(SCALER_PATH):
+
     st.error(
         f"Scaler file not found: {SCALER_PATH}"
     )
+
     st.stop()
 
 
@@ -75,19 +98,24 @@ def load_prediction_scaler():
     )
 
 
-model = load_prediction_model()
+try:
 
-scaler = load_prediction_scaler()
+    model = load_prediction_model()
+
+    scaler = load_prediction_scaler()
+
+except Exception as e:
+
+    st.error(
+        f"Error loading model or scaler: {e}"
+    )
+
+    st.stop()
 
 
 # ============================================================
-# STOCK SETTINGS
+# MODEL SETTINGS
 # ============================================================
-
-ticker = st.sidebar.text_input(
-    "Enter Stock Ticker",
-    value="AAPL"
-).upper().strip()
 
 lookback = 60
 
@@ -97,65 +125,116 @@ lookback = 60
 # ============================================================
 
 st.title(
-    "📈 Stock Price Prediction"
+    "📈 Stock Price Prediction Using LSTM"
 )
 
 st.markdown(
-    """
+    f"""
     ### LSTM-Based Stock Price Prediction
 
-    This application uses a trained **Long Short-Term Memory (LSTM)**
-    neural network to predict the next stock closing price using the
-    previous **60 days** of AAPL closing prices.
+    This application uses a trained
+    **Long Short-Term Memory (LSTM)** neural network
+    to analyze historical stock prices.
+
+    **Selected Stock:** `{ticker}`
+
+    **Prediction Window:** Previous 60 trading days
     """
 )
 
 
 # ============================================================
-# DOWNLOAD CURRENT STOCK DATA
+# DOWNLOAD STOCK DATA
 # ============================================================
-
-import yfinance as yf
-
 
 @st.cache_data
-def download_stock_data():
+def download_stock_data(symbol):
 
-    data = yf.download(
-        ticker,
-        period="5y",
-        auto_adjust=False
-    )
+    try:
 
-    return data
+        stock = yf.Ticker(symbol)
+
+        data = stock.history(
+            period="5y",
+            auto_adjust=False
+        )
+
+        return data
+
+    except Exception:
+
+        return None
 
 
-stock_data = download_stock_data()
+# Download data for selected ticker
+stock_data = download_stock_data(
+    ticker
+)
 
 
 # ============================================================
-# CLEAN DATA
+# CHECK DOWNLOADED DATA
 # ============================================================
 
-if stock_data.empty:
+if stock_data is None:
 
     st.error(
-        "Unable to download stock data."
+        f"Unable to download stock data for {ticker}."
+    )
+
+    st.info(
+        "Please check that the ticker is valid. "
+        "Examples: AAPL, TSLA, MSFT, GOOGL, AMZN."
     )
 
     st.stop()
 
 
-# Handle yfinance multi-level columns
+if stock_data.empty:
+
+    st.error(
+        f"No stock data was found for {ticker}."
+    )
+
+    st.info(
+        "Please enter a valid stock ticker."
+    )
+
+    st.stop()
+
+
+# ============================================================
+# HANDLE YFINANCE MULTI-LEVEL COLUMNS
+# ============================================================
+
 if isinstance(
     stock_data.columns,
     pd.MultiIndex
 ):
 
     stock_data.columns = (
-        stock_data.columns.get_level_values(0)
+        stock_data.columns
+        .get_level_values(0)
     )
 
+
+# ============================================================
+# CHECK CLOSE COLUMN
+# ============================================================
+
+if "Close" not in stock_data.columns:
+
+    st.error(
+        "The downloaded data does not contain "
+        "a 'Close' price column."
+    )
+
+    st.stop()
+
+
+# ============================================================
+# CLEAN DATA
+# ============================================================
 
 stock_data = stock_data.dropna(
     subset=["Close"]
@@ -163,7 +242,7 @@ stock_data = stock_data.dropna(
 
 
 # ============================================================
-# CLOSE PRICE
+# CLOSE PRICES
 # ============================================================
 
 close_prices = stock_data[
@@ -171,10 +250,25 @@ close_prices = stock_data[
 ].values
 
 
-# Make sure Close is one-dimensional
 close_prices = np.array(
-    close_prices
+    close_prices,
+    dtype=float
 ).reshape(-1, 1)
+
+
+# ============================================================
+# CHECK SUFFICIENT DATA
+# ============================================================
+
+if len(close_prices) < lookback:
+
+    st.error(
+        f"Only {len(close_prices)} trading days "
+        f"were downloaded for {ticker}. "
+        f"At least {lookback} days are required."
+    )
+
+    st.stop()
 
 
 # ============================================================
@@ -187,7 +281,18 @@ current_price = float(
 
 
 # ============================================================
-# DISPLAY CURRENT INFORMATION
+# SUCCESS MESSAGE
+# ============================================================
+
+st.success(
+    f"Successfully loaded "
+    f"{len(close_prices)} trading days "
+    f"for {ticker}."
+)
+
+
+# ============================================================
+# CURRENT STOCK INFORMATION
 # ============================================================
 
 col1, col2, col3 = st.columns(3)
@@ -222,7 +327,7 @@ with col3:
 # ============================================================
 
 st.subheader(
-    "📊 Historical Closing Price"
+    f"📊 {ticker} Historical Closing Price"
 )
 
 
@@ -234,13 +339,13 @@ historical_fig.add_trace(
         x=stock_data.index,
         y=close_prices.flatten(),
         mode="lines",
-        name="AAPL Closing Price"
+        name=f"{ticker} Closing Price"
     )
 )
 
 
 historical_fig.update_layout(
-    title="AAPL Historical Closing Price",
+    title=f"{ticker} Historical Closing Price",
     xaxis_title="Date",
     yaxis_title="Price (USD)",
     hovermode="x unified"
@@ -263,8 +368,8 @@ st.subheader(
 
 
 st.write(
-    "The model uses the previous 60 trading days "
-    "to predict the next closing price."
+    f"The model uses the previous {lookback} "
+    f"trading days to predict the next closing price."
 )
 
 
@@ -274,19 +379,24 @@ predict_button = st.button(
 )
 
 
+# ============================================================
+# MAKE PREDICTION
+# ============================================================
+
 if predict_button:
 
     # --------------------------------------------------------
-    # Check sufficient data
+    # IMPORTANT MODEL WARNING
     # --------------------------------------------------------
 
-    if len(close_prices) < lookback:
+    if ticker != "AAPL":
 
-        st.error(
-            "Not enough historical data for prediction."
+        st.warning(
+            "⚠️ Your saved LSTM model was trained on "
+            "AAPL data. The prediction for another ticker "
+            "is only a demonstration and is not a properly "
+            "trained model for that stock."
         )
-
-        st.stop()
 
 
     # --------------------------------------------------------
@@ -299,12 +409,22 @@ if predict_button:
 
 
     # --------------------------------------------------------
-    # Scale the last 60 days
+    # Scale data
     # --------------------------------------------------------
 
-    scaled_last_60 = scaler.transform(
-        last_60_days
-    )
+    try:
+
+        scaled_last_60 = scaler.transform(
+            last_60_days
+        )
+
+    except Exception as e:
+
+        st.error(
+            f"Error scaling stock data: {e}"
+        )
+
+        st.stop()
 
 
     # --------------------------------------------------------
@@ -322,14 +442,24 @@ if predict_button:
     # Make prediction
     # --------------------------------------------------------
 
-    prediction_scaled = model.predict(
-        X_input,
-        verbose=0
-    )
+    try:
+
+        prediction_scaled = model.predict(
+            X_input,
+            verbose=0
+        )
+
+    except Exception as e:
+
+        st.error(
+            f"Error making prediction: {e}"
+        )
+
+        st.stop()
 
 
     # --------------------------------------------------------
-    # Convert prediction back to actual price
+    # Convert prediction to original price
     # --------------------------------------------------------
 
     predicted_price = scaler.inverse_transform(
@@ -395,7 +525,7 @@ if predict_button:
 
 
     # ========================================================
-    # PREDICTION CHART
+    # PREDICTION VISUALIZATION
     # ========================================================
 
     st.subheader(
@@ -406,6 +536,7 @@ if predict_button:
     recent_dates = stock_data.index[
         -lookback:
     ]
+
 
     recent_prices = close_prices[
         -lookback:
@@ -425,7 +556,10 @@ if predict_button:
     )
 
 
-    # Add prediction point
+    # --------------------------------------------------------
+    # Prediction date
+    # --------------------------------------------------------
+
     prediction_date = (
         stock_data.index[-1]
         + pd.Timedelta(days=1)
@@ -446,7 +580,7 @@ if predict_button:
 
 
     prediction_fig.update_layout(
-        title="Last 60 Days + Predicted Price",
+        title=f"{ticker} - Last 60 Days + Prediction",
         xaxis_title="Date",
         yaxis_title="Price (USD)",
         hovermode="x unified"
@@ -543,11 +677,12 @@ st.dataframe(
 
 st.markdown("---")
 
+
 st.warning(
     """
-    **Disclaimer:** This application is for educational and
-    demonstration purposes only. Stock-price predictions are
-    estimates and should not be considered financial advice.
+    **Disclaimer:** This application is for educational
+    and demonstration purposes only. Stock-price predictions
+    are estimates and should not be considered financial advice.
     """
 )
 
